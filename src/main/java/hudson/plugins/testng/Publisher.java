@@ -7,6 +7,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.StringTokenizer;
 
 import hudson.EnvVars;
 import hudson.Extension;
@@ -18,6 +21,7 @@ import hudson.model.Action;
 import hudson.model.BuildListener;
 import hudson.model.Result;
 import hudson.plugins.testng.results.TestNGResult;
+import hudson.plugins.testng.results.MethodResult;
 import hudson.tasks.BuildStepDescriptor;
 import hudson.tasks.BuildStepMonitor;
 import hudson.tasks.Recorder;
@@ -43,20 +47,26 @@ public class Publisher extends Recorder {
    public final boolean unstableOnSkippedTests;
    //failed config mark build as failure
    public final boolean failureOnFailedTestConfig;
-
+   //groupts to ignore
+   public final String groupsToIgnore;
 
    @Extension
    public static final DescriptorImpl DESCRIPTOR = new DescriptorImpl();
 
    @DataBoundConstructor
    public Publisher(String reportFilenamePattern, boolean escapeTestDescp, boolean escapeExceptionMsg,
-                    boolean showFailedBuilds, boolean unstableOnSkippedTests, boolean failureOnFailedTestConfig) {
+                    boolean showFailedBuilds, boolean unstableOnSkippedTests, boolean failureOnFailedTestConfig, 
+                    String groupsToIgnore) {
       this.reportFilenamePattern = reportFilenamePattern;
       this.escapeTestDescp = escapeTestDescp;
       this.escapeExceptionMsg = escapeExceptionMsg;
       this.showFailedBuilds = showFailedBuilds;
       this.unstableOnSkippedTests = unstableOnSkippedTests;
       this.failureOnFailedTestConfig = failureOnFailedTestConfig;
+      if(groupsToIgnore != null && !groupsToIgnore.isEmpty()) {
+        groupsToIgnore = groupsToIgnore.trim();
+      }
+      this.groupsToIgnore = groupsToIgnore;
    }
 
    public BuildStepMonitor getRequiredMonitorService() {
@@ -141,7 +151,7 @@ public class Publisher extends Recorder {
          } else if (unstableOnSkippedTests && (results.getSkippedConfigCount() > 0 || results.getSkipCount() > 0)) {
             logger.println("Skipped Tests/Configs found. Marking build as UNSTABLE.");
             build.setResult(Result.UNSTABLE);
-         } else if (results.getFailedConfigCount() > 0 || results.getFailCount() > 0) {
+         } else if (results.getFailedConfigCount() > 0 || getFailedCount(results, logger) > 0) {
             logger.println("Failed Tests/Configs found. Marking build as UNSTABLE.");
             build.setResult(Result.UNSTABLE);
          }
@@ -151,6 +161,49 @@ public class Publisher extends Recorder {
       }
       logger.println("TestNG Reports Processing: FINISH");
       return true;
+   }
+
+   Set<String> getGroupsToIgnoreSet() {
+      Set<String> retval = new HashSet<String>();
+      StringTokenizer tokenizer = new StringTokenizer(groupsToIgnore, " ,/t/r/n");
+      while(tokenizer.hasMoreTokens()) {
+        String group = tokenizer.nextToken();
+        if(!group.isEmpty()) {
+          retval.add(group.trim().toLowerCase());
+        }
+      }
+      return retval;
+   }
+
+   int getFailedCount(TestNGResult results,  PrintStream logger) {
+     logger.println("groupsToIgnore " + groupsToIgnore);
+
+     Set<String> groupsToIgnoreSet = getGroupsToIgnoreSet();
+     
+     logger.println("groupsToIgnoreSet " + groupsToIgnoreSet.toString());
+     int count = 0;
+     if(groupsToIgnoreSet.size() == 0) {
+       return results.getFailCount();
+     }
+
+
+     for (MethodResult test : results.getFailedTests()) {
+       boolean ignore = false;
+       for(String group : test.getGroups()) {
+         group = group.trim().toLowerCase();
+         logger.println("group " + group);
+         if(groupsToIgnoreSet.contains(group)) {
+           logger.println("ignoring test " + test.getName() + " because it's in " + group + " group.");
+           ignore = true;
+           break;
+         } 
+       }
+       if(!ignore) {
+         logger.println("count test " + test.getName() + ". It's in " + test.getGroups());
+         ++count;
+       }
+     }
+     return count;
    }
 
    /**
